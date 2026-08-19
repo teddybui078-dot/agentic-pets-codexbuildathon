@@ -154,7 +154,10 @@ public final class PetWindowController: NSObject, PetWindowControlling {
 
         positionBubble(bubble)
         bubble.alphaValue = 1
-        bubble.orderFrontRegardless()
+        // makeKeyAndOrderFront (not just orderFrontRegardless) so the input field can
+        // actually receive keystrokes — .nonactivatingPanel means this still won't
+        // steal focus from, or activate over, whatever app the user is working in.
+        bubble.makeKeyAndOrderFront(nil)
     }
 
     public func setMood(working: Bool) {
@@ -170,7 +173,7 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         bubbleView.onClose = { [weak self] in self?.hideBubble() }
         bubbleView.onAsk = { [weak self] question in self?.onAskQuestion?(question) }
 
-        let bubble = NSPanel(
+        let bubble = ChatBubblePanel(
             contentRect: bubbleView.frame,
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
@@ -180,6 +183,7 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         bubble.isOpaque = false
         bubble.backgroundColor = .clear
         bubble.hasShadow = true
+        bubble.hidesOnDeactivate = false
         bubble.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         bubble.contentView = bubbleView
         return bubble
@@ -208,6 +212,13 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         let origin = NSPoint(x: panelFrame.midX - size.width / 2, y: originY)
         bubble.setFrameOrigin(origin)
     }
+}
+
+/// Plain NSPanel with a borderless, non-activating style mask doesn't reliably
+/// accept key status by default, which is what let the bubble show up but never
+/// actually take keystrokes for its chat input. Forcing it here fixes that.
+private final class ChatBubblePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }
 
 extension PetWindowController: NSMenuDelegate {
