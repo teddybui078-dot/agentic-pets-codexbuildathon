@@ -3,3 +3,4 @@
 *.xcodeproj
 github.txt
 .DS_Store
+.env

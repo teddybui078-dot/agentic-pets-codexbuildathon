@@ -2,13 +2,11 @@ import AppKit
 
 /// Owns the floating pet window: a small, always-on-top, transparent, draggable
 /// NSPanel docked next to the display notch (or top-center on notch-less
-/// screens), plus a lightweight speech-bubble overlay driven by `showBubble(text:)`.
+/// screens), plus a speech-bubble/mini-chat overlay driven by `showBubble(text:)`.
 public final class PetWindowController: NSObject, PetWindowControlling {
 
     private static let defaultPetSize: CGFloat = 140
     private static let notchMargin: CGFloat = 6
-    private static let bubbleVisibleDuration: TimeInterval = 6
-    private static let bubbleSize = NSSize(width: 200, height: 60)
     private static let petSizeDefaultsKey = "AgenticPets.petSize"
 
     private let panel: NSPanel
@@ -16,7 +14,10 @@ public final class PetWindowController: NSObject, PetWindowControlling {
     private var petSize: CGFloat
 
     private var bubblePanel: NSPanel?
-    private var bubbleHideWorkItem: DispatchWorkItem?
+    private var isBubbleVisible = false
+
+    /// Fired when the user types a question into the bubble's chat input.
+    public var onAskQuestion: ((String) -> Void)?
 
     public override init() {
         let savedSize = UserDefaults.standard.double(forKey: Self.petSizeDefaultsKey)
@@ -49,6 +50,14 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         }
         view.menu = makeSizeMenu()
 
+        // Keep the bubble glued to the pet's head as it's dragged or resized.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(petFrameChanged), name: NSWindow.didMoveNotification, object: panel
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(petFrameChanged), name: NSWindow.didResizeNotification, object: panel
+        )
+
         positionNearNotch()
         panel.orderFrontRegardless()
     }
@@ -78,6 +87,11 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         setPetSize(petSize + delta)
     }
 
+    @objc private func petFrameChanged() {
+        guard isBubbleVisible, let bubble = bubblePanel else { return }
+        positionBubble(bubble)
+    }
+
     // MARK: - Size menu
 
     private func makeSizeMenu() -> NSMenu {
@@ -89,12 +103,21 @@ public final class PetWindowController: NSObject, PetWindowControlling {
             item.representedObject = NSNumber(value: Double(preset.size))
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        let askItem = NSMenuItem(title: "Ask about my agents…", action: #selector(askMenuItemSelected), keyEquivalent: "")
+        askItem.target = self
+        menu.addItem(askItem)
         return menu
     }
 
     @objc private func sizePresetSelected(_ sender: NSMenuItem) {
         guard let number = sender.representedObject as? NSNumber else { return }
         setPetSize(CGFloat(number.doubleValue))
+    }
+
+    @objc private func askMenuItemSelected() {
+        showBubble(text: "What would you like to know about your coding agents?")
+        (bubblePanel?.contentView as? PetBubbleView)?.focusInput()
     }
 
     /// Docks the pet just to the right of the notch, inside the menu-bar strip, on
@@ -117,25 +140,21 @@ public final class PetWindowController: NSObject, PetWindowControlling {
 
     // MARK: - PetWindowControlling
 
+    /// Shows (or updates) the bubble. It stays up until the user dismisses it —
+    /// there's no auto-hide timer — and tracks the pet if it's moved or resized.
     public func showBubble(text: String) {
-        bubbleHideWorkItem?.cancel()
-
         let bubble = bubblePanel ?? makeBubblePanel()
         bubblePanel = bubble
+        isBubbleVisible = true
 
         if let bubbleView = bubble.contentView as? PetBubbleView {
             bubbleView.setText(text)
+            bubble.setContentSize(bubbleView.fittingSize())
         }
 
         positionBubble(bubble)
         bubble.alphaValue = 1
         bubble.orderFrontRegardless()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.bubblePanel?.orderOut(nil)
-        }
-        bubbleHideWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.bubbleVisibleDuration, execute: workItem)
     }
 
     public func setMood(working: Bool) {
@@ -146,7 +165,10 @@ public final class PetWindowController: NSObject, PetWindowControlling {
     // MARK: - Bubble
 
     private func makeBubblePanel() -> NSPanel {
-        let bubbleView = PetBubbleView(frame: NSRect(origin: .zero, size: Self.bubbleSize))
+        let initialSize = NSSize(width: PetBubbleView.width, height: 44)
+        let bubbleView = PetBubbleView(frame: NSRect(origin: .zero, size: initialSize))
+        bubbleView.onClose = { [weak self] in self?.hideBubble() }
+        bubbleView.onAsk = { [weak self] question in self?.onAskQuestion?(question) }
 
         let bubble = NSPanel(
             contentRect: bubbleView.frame,
@@ -158,19 +180,32 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         bubble.isOpaque = false
         bubble.backgroundColor = .clear
         bubble.hasShadow = true
-        bubble.ignoresMouseEvents = true
         bubble.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         bubble.contentView = bubbleView
         return bubble
     }
 
+    private func hideBubble() {
+        isBubbleVisible = false
+        bubblePanel?.orderOut(nil)
+    }
+
     private func positionBubble(_ bubble: NSPanel) {
         let panelFrame = panel.frame
         let size = bubble.frame.size
-        let origin = NSPoint(
-            x: panelFrame.midX - size.width / 2,
-            y: panelFrame.maxY + 8
-        )
+        let gap: CGFloat = 8
+
+        // Anchor to the top of the character's head, not the whole (mostly
+        // transparent) square, so the bubble sits right over the pet.
+        let headTopY = panelFrame.maxY - petSize * PetView.headTopFraction
+
+        // The pet can dock flush against the top of the screen (by the notch),
+        // which leaves no room above — flip below in that case.
+        let screenMaxY = NSScreen.main?.visibleFrame.maxY ?? .greatestFiniteMagnitude
+        let fitsAbove = headTopY + gap + size.height <= screenMaxY
+        let originY = fitsAbove ? headTopY + gap : panelFrame.minY - gap - size.height
+
+        let origin = NSPoint(x: panelFrame.midX - size.width / 2, y: originY)
         bubble.setFrameOrigin(origin)
     }
 }

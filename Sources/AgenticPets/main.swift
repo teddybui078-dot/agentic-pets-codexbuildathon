@@ -29,6 +29,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             petWindow.showBubble(text: message)
         }
 
+        petWindow.onAskQuestion = { [weak self] question in
+            guard let self else { return }
+            AgentChatResponder.answer(question: question, currentState: self.lastAgentState) { answer in
+                petWindow.showBubble(text: answer)
+            }
+        }
+
         agentMonitor.start()
         distractionDetector.start()
     }
