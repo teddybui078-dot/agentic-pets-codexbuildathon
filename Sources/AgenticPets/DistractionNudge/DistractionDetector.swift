@@ -18,11 +18,19 @@ final class DistractionDetector: DistractionObserving {
         "company.thebrowser.Browser" // Arc
     ]
 
-    /// How long a browser must stay frontmost, continuously, before we nudge.
-    private let distractionThreshold: TimeInterval = 15
+    /// How long a browser must stay frontmost before nudging, when we arrived from
+    /// another browser (e.g. bouncing between two browser windows) — lenient, since
+    /// that's a much weaker signal of "just got distracted".
+    private let browserToBrowserThreshold: TimeInterval = 15
+
+    /// How long to wait when switching straight from a non-browser app (a coding
+    /// agent, terminal, ChatGPT/Codex desktop app, editor, etc.) into a browser —
+    /// that's a strong, immediate distraction signal, so nudge almost instantly.
+    private let workToBrowserThreshold: TimeInterval = 2
 
     private var pendingWorkItem: DispatchWorkItem?
     private var observerToken: NSObjectProtocol?
+    private var previousBundleID: String?
 
     deinit {
         stop()
@@ -52,6 +60,8 @@ final class DistractionDetector: DistractionObserving {
     private func handleActivation(_ notification: Notification) {
         let bundleID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
             .bundleIdentifier
+        let cameFromBrowser = previousBundleID.map(browserBundleIDs.contains) ?? false
+        previousBundleID = bundleID
 
         // Whatever was pending is no longer valid once the frontmost app changes.
         cancelPendingNudge()
@@ -61,15 +71,16 @@ final class DistractionDetector: DistractionObserving {
             return
         }
 
-        scheduleNudge(for: bundleID)
+        let threshold = cameFromBrowser ? browserToBrowserThreshold : workToBrowserThreshold
+        scheduleNudge(for: bundleID, after: threshold)
     }
 
-    private func scheduleNudge(for bundleID: String) {
+    private func scheduleNudge(for bundleID: String, after threshold: TimeInterval) {
         let workItem = DispatchWorkItem { [weak self] in
             self?.fireNudge(for: bundleID)
         }
         pendingWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + distractionThreshold, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + threshold, execute: workItem)
     }
 
     private func cancelPendingNudge() {
