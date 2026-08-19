@@ -1,8 +1,10 @@
 import AppKit
 import AVFoundation
+import CoreImage
 
 /// Renders the pet itself: a looping video (idle by default, hover on mouse-over),
 /// with a graceful fallback to a static image (or nothing) if assets are missing.
+/// The video's near-white background is keyed out to transparency at playback time.
 final class PetView: NSView {
 
     private static let idleAssetName = "pet-idle"
@@ -11,6 +13,22 @@ final class PetView: NSView {
     private static let videoExtension = "mp4"
     private static let imageExtension = "png"
 
+    static let minSize: CGFloat = 72
+    static let maxSize: CGFloat = 360
+
+    /// Removes near-white pixels (the flat background the pet assets are rendered on)
+    /// by turning them transparent; premultiplied-alpha output per Core Image convention.
+    private static let chromaKeyKernel: CIColorKernel? = CIColorKernel(source: """
+        kernel vec4 whiteChromaKey(__sample s) {
+            float threshold = 0.15;
+            float softness = 0.12;
+            float dist = distance(s.rgb, vec3(1.0, 1.0, 1.0));
+            float alpha = smoothstep(threshold, threshold + softness, dist);
+            alpha = min(alpha, s.a);
+            return vec4(s.rgb * alpha, alpha);
+        }
+        """)
+
     private let playerLayer = AVPlayerLayer()
     private var queuePlayer: AVQueuePlayer?
     private var playerLooper: AVPlayerLooper?
@@ -18,6 +36,9 @@ final class PetView: NSView {
     private var fallbackImageLayer: CALayer?
     private var trackingArea: NSTrackingArea?
     private var currentRate: Float = 1.0
+
+    /// Called with a proposed size delta (points) when the user scrolls over the pet.
+    var onResizeRequest: ((CGFloat) -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -71,6 +92,10 @@ final class PetView: NSView {
         play(assetNamed: Self.idleAssetName, fallbackToStaticImage: true)
     }
 
+    override func scrollWheel(with event: NSEvent) {
+        onResizeRequest?(event.scrollingDeltaY)
+    }
+
     /// Subtly adjusts playback speed; used by PetWindowController.setMood as a
     /// lightweight stand-in for a fuller mood system.
     func setPlaybackRate(_ rate: Float) {
@@ -89,7 +114,10 @@ final class PetView: NSView {
             return
         }
 
-        let item = AVPlayerItem(url: url)
+        let asset = AVURLAsset(url: url)
+        let item = AVPlayerItem(asset: asset)
+        item.videoComposition = Self.makeChromaKeyComposition(for: asset)
+
         let player = AVQueuePlayer()
         let looper = AVPlayerLooper(player: player, templateItem: item)
 
@@ -125,6 +153,16 @@ final class PetView: NSView {
     private func resourceURL(named name: String, extension ext: String) -> URL? {
         Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "Resources")
             ?? Bundle.module.url(forResource: name, withExtension: ext)
+    }
+
+    private static func makeChromaKeyComposition(for asset: AVAsset) -> AVMutableVideoComposition? {
+        guard let kernel = chromaKeyKernel else { return nil }
+        let composition = AVMutableVideoComposition(asset: asset) { request in
+            let source = request.sourceImage.clampedToExtent()
+            let output = kernel.apply(extent: request.sourceImage.extent, roiCallback: { _, rect in rect }, arguments: [source])
+            request.finish(with: output ?? request.sourceImage, context: nil)
+        }
+        return composition
     }
 }
 

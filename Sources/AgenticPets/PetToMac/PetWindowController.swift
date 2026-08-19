@@ -5,23 +5,29 @@ import AppKit
 /// speech-bubble overlay driven by `showBubble(text:)`.
 public final class PetWindowController: NSObject, PetWindowControlling {
 
-    private static let petSize = NSSize(width: 160, height: 160)
+    private static let defaultPetSize: CGFloat = 160
     private static let screenMargin: CGFloat = 24
     private static let bubbleVisibleDuration: TimeInterval = 6
     private static let bubbleSize = NSSize(width: 200, height: 60)
+    private static let petSizeDefaultsKey = "AgenticPets.petSize"
 
     private let panel: NSPanel
     private let petView: PetView
+    private var petSize: CGFloat
 
     private var bubblePanel: NSPanel?
     private var bubbleHideWorkItem: DispatchWorkItem?
 
     public override init() {
-        let view = PetView(frame: NSRect(origin: .zero, size: Self.petSize))
+        let savedSize = UserDefaults.standard.double(forKey: Self.petSizeDefaultsKey)
+        let initialSize = savedSize >= Double(PetView.minSize) ? CGFloat(savedSize) : Self.defaultPetSize
+        petSize = initialSize
+
+        let view = PetView(frame: NSRect(origin: .zero, size: NSSize(width: initialSize, height: initialSize)))
         petView = view
 
         let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: Self.petSize),
+            contentRect: NSRect(origin: .zero, size: NSSize(width: initialSize, height: initialSize)),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -38,14 +44,43 @@ public final class PetWindowController: NSObject, PetWindowControlling {
 
         super.init()
 
+        view.onResizeRequest = { [weak self] delta in
+            self?.adjustPetSize(byPointDelta: delta)
+        }
+
         positionInBottomRightCorner()
         panel.orderFrontRegardless()
+    }
+
+    /// Sets the pet's on-screen size directly (points, applied to both width and height),
+    /// clamped to a sane range, keeping it anchored to the bottom-right corner.
+    public func setPetSize(_ size: CGFloat) {
+        let clamped = min(max(size, PetView.minSize), PetView.maxSize)
+        guard clamped != petSize else { return }
+        petSize = clamped
+
+        // Resize around the current center so it doesn't jump if the user dragged it.
+        let center = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let newFrame = NSRect(
+            x: center.x - clamped / 2,
+            y: center.y - clamped / 2,
+            width: clamped,
+            height: clamped
+        )
+        panel.setFrame(newFrame, display: true)
+
+        UserDefaults.standard.set(Double(clamped), forKey: Self.petSizeDefaultsKey)
+    }
+
+    private func adjustPetSize(byPointDelta delta: CGFloat) {
+        // Scroll up/away grows the pet, scroll down/toward shrinks it.
+        setPetSize(petSize + delta)
     }
 
     private func positionInBottomRightCorner() {
         guard let screenFrame = NSScreen.main?.visibleFrame else { return }
         let origin = NSPoint(
-            x: screenFrame.maxX - Self.petSize.width - Self.screenMargin,
+            x: screenFrame.maxX - petSize - Self.screenMargin,
             y: screenFrame.minY + Self.screenMargin
         )
         panel.setFrameOrigin(origin)
