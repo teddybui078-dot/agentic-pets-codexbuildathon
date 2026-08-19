@@ -14,7 +14,7 @@ final class AgentActivityMonitor: AgentActivityObserving {
     var onActivityChange: ((AgentActivityState) -> Void)?
 
     /// How often to poll for agent activity.
-    private let pollInterval: TimeInterval = 5.0
+    private let pollInterval: TimeInterval = 2.0
 
     /// How recent a session log's last modification needs to be to count as "active".
     private let recentActivityWindow: TimeInterval = 60.0
@@ -25,12 +25,21 @@ final class AgentActivityMonitor: AgentActivityObserving {
     private var timer: Timer?
     private let queue = DispatchQueue(label: "com.agenticpets.agentmonitor", qos: .utility)
 
-    /// OCR + OpenAI refinement is comparatively expensive, so it only runs this
-    /// often — not on every 5s poll — regardless of which tool the agent is (OCR
-    /// reads whatever's on screen, so this works for Codex, Cursor, etc. too, not
-    /// just Claude Code's own session logs).
-    private let ocrRefreshInterval: TimeInterval = 20
-    private var lastOCRRefreshAt: Date?
+    /// A running process name is a weak signal — e.g. Claude Code itself is always
+    /// "running" for the entire session whether it's idle at a prompt or mid-task,
+    /// and the same goes for a Codex terminal just sitting there. So on every poll
+    /// where the process/log heuristic says an agent *might* be active, we OCR the
+    /// screen (cheap, local, no network) and diff it against the last snapshot: if
+    /// the visible text hasn't changed in a while, it's idle regardless of what
+    /// processes exist.
+    private let activeIdleWindow: TimeInterval = 8.0
+    private var lastOCRSnapshot: String?
+    private var lastOCRChangeAt = Date.distantPast
+
+    /// The OpenAI call to turn OCR text into a specific summary is the expensive
+    /// part (network), so it's throttled separately and less aggressively.
+    private let ocrSummaryRefreshInterval: TimeInterval = 8.0
+    private var lastOCRSummaryAt: Date?
 
     func start() {
         // Run an initial check right away, then poll on a repeating timer.
@@ -58,8 +67,8 @@ final class AgentActivityMonitor: AgentActivityObserving {
 
     private func maybeRefineWithOCR() {
         let now = Date()
-        if let last = lastOCRRefreshAt, now.timeIntervalSince(last) < ocrRefreshInterval { return }
-        lastOCRRefreshAt = now
+        if let last = lastOCRSummaryAt, now.timeIntervalSince(last) < ocrSummaryRefreshInterval { return }
+        lastOCRSummaryAt = now
 
         AgentChatResponder.describeCurrentWork { [weak self] description in
             guard let self, let description else { return }
@@ -85,11 +94,33 @@ final class AgentActivityMonitor: AgentActivityObserving {
             return .idle
         }
 
+        // Process/log presence is weak on its own (a Codex terminal or a Claude Code
+        // session stays "running" whether it's idle at a prompt or mid-task) — refine
+        // with on-screen activity: no visible change recently means actually idle.
+        if !isScreenActivelyChanging() {
+            return .idle
+        }
+
         if logIsRecent, let recentLog, let summary = summarize(sessionLogAt: recentLog.url) {
             return .working(summary: summary)
         }
 
         return .working(summary: "your coding agent is working")
+    }
+
+    /// Updates the OCR change-tracking snapshot and reports whether the screen has
+    /// visibly changed within `activeIdleWindow`. If OCR itself is unavailable (e.g.
+    /// Screen Recording permission not granted), falls back to "true" so we don't
+    /// regress to always-idle without that signal.
+    private func isScreenActivelyChanging() -> Bool {
+        guard let currentText = ScreenTextReader.captureScreenText() else { return true }
+
+        if currentText != lastOCRSnapshot {
+            lastOCRSnapshot = currentText
+            lastOCRChangeAt = Date()
+        }
+
+        return Date().timeIntervalSince(lastOCRChangeAt) <= activeIdleWindow
     }
 
     // MARK: - Process detection
