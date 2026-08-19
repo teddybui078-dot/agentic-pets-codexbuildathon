@@ -1,10 +1,36 @@
 import AppKit
 
-// Bootstrap. Wiring of PetWindowController / AgentActivityMonitor / DistractionDetector
-// happens here once their branches are merged in (see plan's Integration step).
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var petWindow: PetWindowController?
+    private let agentMonitor = AgentActivityMonitor()
+    private let distractionDetector = DistractionDetector()
+
+    /// Only nudge the user if the agent was actually working when they drifted away.
+    private var lastAgentState: AgentActivityState = .idle
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        let petWindow = PetWindowController()
+        self.petWindow = petWindow
+
+        agentMonitor.onActivityChange = { [weak self] state in
+            self?.lastAgentState = state
+            switch state {
+            case .idle:
+                petWindow.setMood(working: false)
+            case .working:
+                petWindow.setMood(working: true)
+            }
+        }
+
+        distractionDetector.onDistracted = { [weak self] message in
+            guard case .working = self?.lastAgentState else { return }
+            petWindow.showBubble(text: message)
+        }
+
+        agentMonitor.start()
+        distractionDetector.start()
     }
 }
 
