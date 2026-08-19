@@ -41,14 +41,23 @@ final class PetView: NSView {
         }
         """)
 
-    private let playerLayer = AVPlayerLayer()
-    private var queuePlayer: AVQueuePlayer?
-    private var playerLooper: AVPlayerLooper?
+    // Idle and hover each get their own player/layer, both created once and kept
+    // running continuously in the background. Hovering just toggles which layer is
+    // visible instead of tearing down and rebuilding a player pipeline on the fly —
+    // that rebuild (new AVQueuePlayer + looper + chroma-key composition) isn't
+    // instant, and doing it live on every hover was what caused the pet to visibly
+    // blank out and reappear.
+    private let idleLayer = AVPlayerLayer()
+    private let hoverLayer = AVPlayerLayer()
+    private var idlePlayer: AVQueuePlayer?
+    private var idleLooper: AVPlayerLooper?
+    private var hoverPlayer: AVQueuePlayer?
+    private var hoverLooper: AVPlayerLooper?
+    private var isHoverAvailable = false
 
     private var fallbackImageLayer: CALayer?
     private var trackingArea: NSTrackingArea?
     private var currentRate: Float = 1.0
-    private var currentAssetName: String?
 
     /// Called with a proposed size delta (points) when the user scrolls over the pet.
     var onResizeRequest: ((CGFloat) -> Void)?
@@ -58,12 +67,32 @@ final class PetView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
 
-        playerLayer.videoGravity = .resizeAspect
-        playerLayer.backgroundColor = NSColor.clear.cgColor
-        playerLayer.frame = bounds
-        layer?.addSublayer(playerLayer)
+        for playerLayer in [idleLayer, hoverLayer] {
+            playerLayer.videoGravity = .resizeAspect
+            playerLayer.backgroundColor = NSColor.clear.cgColor
+            playerLayer.frame = bounds
+            layer?.addSublayer(playerLayer)
+        }
+        hoverLayer.isHidden = true
 
-        play(assetNamed: Self.idleAssetName, fallbackToStaticImage: true)
+        if let (player, looper) = Self.makeLoopingPlayer(assetNamed: Self.idleAssetName) {
+            idlePlayer = player
+            idleLooper = looper
+            idleLayer.player = player
+            player.isMuted = true
+            player.play()
+        } else {
+            showStaticFallbackIfAvailable()
+        }
+
+        if let (player, looper) = Self.makeLoopingPlayer(assetNamed: Self.hoverAssetName) {
+            hoverPlayer = player
+            hoverLooper = looper
+            hoverLayer.player = player
+            player.isMuted = true
+            player.play()
+            isHoverAvailable = true
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -74,7 +103,8 @@ final class PetView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = bounds
+        idleLayer.frame = bounds
+        hoverLayer.frame = bounds
         fallbackImageLayer?.frame = bounds
         CATransaction.commit()
     }
@@ -106,14 +136,15 @@ final class PetView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        // Only swap if a hover asset actually exists; otherwise keep looping idle.
-        if resourceURL(named: Self.hoverAssetName, extension: Self.videoExtension) != nil {
-            play(assetNamed: Self.hoverAssetName, fallbackToStaticImage: false)
-        }
+        guard isHoverAvailable else { return }
+        idleLayer.isHidden = true
+        hoverLayer.isHidden = false
     }
 
     override func mouseExited(with event: NSEvent) {
-        play(assetNamed: Self.idleAssetName, fallbackToStaticImage: true)
+        guard isHoverAvailable else { return }
+        hoverLayer.isHidden = true
+        idleLayer.isHidden = false
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -124,41 +155,27 @@ final class PetView: NSView {
     /// lightweight stand-in for a fuller mood system.
     func setPlaybackRate(_ rate: Float) {
         currentRate = rate
-        guard let player = queuePlayer, player.rate != 0 else { return }
-        player.rate = rate
+        for player in [idlePlayer, hoverPlayer] {
+            guard let player, player.rate != 0 else { continue }
+            player.rate = rate
+        }
     }
 
     // MARK: - Playback
 
-    private func play(assetNamed name: String, fallbackToStaticImage: Bool) {
-        // Already showing this asset: don't tear down and rebuild the player, which
-        // is what was causing the pet to flash/disappear on redundant hover events.
-        guard name != currentAssetName else { return }
-
-        guard let url = resourceURL(named: name, extension: Self.videoExtension) else {
-            if fallbackToStaticImage {
-                showStaticFallbackIfAvailable()
-            }
-            return
+    private static func makeLoopingPlayer(assetNamed name: String) -> (AVQueuePlayer, AVPlayerLooper)? {
+        guard let url = Bundle.module.url(forResource: name, withExtension: videoExtension, subdirectory: "Resources")
+            ?? Bundle.module.url(forResource: name, withExtension: videoExtension) else {
+            return nil
         }
-        currentAssetName = name
 
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
-        item.videoComposition = Self.makeChromaKeyComposition(for: asset)
+        item.videoComposition = makeChromaKeyComposition(for: asset)
 
         let player = AVQueuePlayer()
         let looper = AVPlayerLooper(player: player, templateItem: item)
-
-        queuePlayer = player
-        playerLooper = looper
-        playerLayer.player = player
-
-        player.isMuted = true
-        player.play()
-        player.rate = currentRate
-
-        fallbackImageLayer?.isHidden = true
+        return (player, looper)
     }
 
     private func showStaticFallbackIfAvailable() {
