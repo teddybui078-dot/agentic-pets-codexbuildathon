@@ -25,6 +25,13 @@ final class AgentActivityMonitor: AgentActivityObserving {
     private var timer: Timer?
     private let queue = DispatchQueue(label: "com.agenticpets.agentmonitor", qos: .utility)
 
+    /// OCR + OpenAI refinement is comparatively expensive, so it only runs this
+    /// often — not on every 5s poll — regardless of which tool the agent is (OCR
+    /// reads whatever's on screen, so this works for Codex, Cursor, etc. too, not
+    /// just Claude Code's own session logs).
+    private let ocrRefreshInterval: TimeInterval = 20
+    private var lastOCRRefreshAt: Date?
+
     func start() {
         // Run an initial check right away, then poll on a repeating timer.
         pollOnce()
@@ -43,6 +50,20 @@ final class AgentActivityMonitor: AgentActivityObserving {
             DispatchQueue.main.async {
                 self.onActivityChange?(state)
             }
+            if case .working = state {
+                self.maybeRefineWithOCR()
+            }
+        }
+    }
+
+    private func maybeRefineWithOCR() {
+        let now = Date()
+        if let last = lastOCRRefreshAt, now.timeIntervalSince(last) < ocrRefreshInterval { return }
+        lastOCRRefreshAt = now
+
+        AgentChatResponder.describeCurrentWork { [weak self] description in
+            guard let self, let description else { return }
+            self.onActivityChange?(.working(summary: description))
         }
     }
 
