@@ -19,14 +19,14 @@ final class DistractionDetector: DistractionObserving {
     ]
 
     /// How long a browser must stay frontmost before nudging, when we arrived from
-    /// another browser (e.g. bouncing between two browser windows) — lenient, since
-    /// that's a much weaker signal of "just got distracted".
-    private let browserToBrowserThreshold: TimeInterval = 15
+    /// another browser (e.g. bouncing between two browser windows) — slightly more
+    /// lenient than the work->browser case, but still fast.
+    private let browserToBrowserThreshold: TimeInterval = 3
 
     /// How long to wait when switching straight from a non-browser app (a coding
     /// agent, terminal, ChatGPT/Codex desktop app, editor, etc.) into a browser —
     /// that's a strong, immediate distraction signal, so nudge almost instantly.
-    private let workToBrowserThreshold: TimeInterval = 2
+    private let workToBrowserThreshold: TimeInterval = 1
 
     private var pendingWorkItem: DispatchWorkItem?
     private var observerToken: NSObjectProtocol?
