@@ -1,12 +1,12 @@
 import AppKit
 
 /// Owns the floating pet window: a small, always-on-top, transparent, draggable
-/// NSPanel pinned to the bottom-right corner of the screen, plus a lightweight
-/// speech-bubble overlay driven by `showBubble(text:)`.
+/// NSPanel docked next to the display notch (or top-center on notch-less
+/// screens), plus a lightweight speech-bubble overlay driven by `showBubble(text:)`.
 public final class PetWindowController: NSObject, PetWindowControlling {
 
-    private static let defaultPetSize: CGFloat = 160
-    private static let screenMargin: CGFloat = 24
+    private static let defaultPetSize: CGFloat = 140
+    private static let notchMargin: CGFloat = 6
     private static let bubbleVisibleDuration: TimeInterval = 6
     private static let bubbleSize = NSSize(width: 200, height: 60)
     private static let petSizeDefaultsKey = "AgenticPets.petSize"
@@ -47,13 +47,14 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         view.onResizeRequest = { [weak self] delta in
             self?.adjustPetSize(byPointDelta: delta)
         }
+        view.menu = makeSizeMenu()
 
-        positionInBottomRightCorner()
+        positionNearNotch()
         panel.orderFrontRegardless()
     }
 
     /// Sets the pet's on-screen size directly (points, applied to both width and height),
-    /// clamped to a sane range, keeping it anchored to the bottom-right corner.
+    /// clamped to a sane range, resizing around its current center.
     public func setPetSize(_ size: CGFloat) {
         let clamped = min(max(size, PetView.minSize), PetView.maxSize)
         guard clamped != petSize else { return }
@@ -77,13 +78,41 @@ public final class PetWindowController: NSObject, PetWindowControlling {
         setPetSize(petSize + delta)
     }
 
-    private func positionInBottomRightCorner() {
-        guard let screenFrame = NSScreen.main?.visibleFrame else { return }
-        let origin = NSPoint(
-            x: screenFrame.maxX - petSize - Self.screenMargin,
-            y: screenFrame.minY + Self.screenMargin
-        )
-        panel.setFrameOrigin(origin)
+    // MARK: - Size menu
+
+    private func makeSizeMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        for preset in PetView.sizePresets {
+            let item = NSMenuItem(title: preset.label, action: #selector(sizePresetSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = NSNumber(value: Double(preset.size))
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func sizePresetSelected(_ sender: NSMenuItem) {
+        guard let number = sender.representedObject as? NSNumber else { return }
+        setPetSize(CGFloat(number.doubleValue))
+    }
+
+    /// Docks the pet just to the right of the notch, inside the menu-bar strip, on
+    /// screens that have one. Falls back to top-center on notch-less displays.
+    private func positionNearNotch() {
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.frame
+        let originY = screenFrame.maxY - petSize
+
+        var originX = screenFrame.midX - petSize / 2
+        if #available(macOS 12.0, *) {
+            let rightOfNotch = screen.auxiliaryTopRightArea
+            if let rightOfNotch, rightOfNotch.width > 0 {
+                originX = rightOfNotch.minX + Self.notchMargin
+            }
+        }
+
+        panel.setFrameOrigin(NSPoint(x: originX, y: originY))
     }
 
     // MARK: - PetWindowControlling
@@ -143,5 +172,15 @@ public final class PetWindowController: NSObject, PetWindowControlling {
             y: panelFrame.maxY + 8
         )
         bubble.setFrameOrigin(origin)
+    }
+}
+
+extension PetWindowController: NSMenuDelegate {
+    /// Checkmarks the preset matching the pet's current size.
+    public func menuWillOpen(_ menu: NSMenu) {
+        for item in menu.items {
+            guard let number = item.representedObject as? NSNumber else { continue }
+            item.state = abs(CGFloat(number.doubleValue) - petSize) < 0.5 ? .on : .off
+        }
     }
 }

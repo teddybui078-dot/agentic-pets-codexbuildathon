@@ -16,6 +16,18 @@ final class PetView: NSView {
     static let minSize: CGFloat = 72
     static let maxSize: CGFloat = 360
 
+    /// Fixed size presets offered via the right-click menu.
+    static let sizePresets: [(label: String, size: CGFloat)] = [
+        ("Small", 100), ("Medium", 160), ("Large", 240)
+    ]
+
+    /// Where the character actually sits within the square video frame (measured via
+    /// ffmpeg cropdetect against the near-white background, plus padding for animation
+    /// motion), as fractions of the view's bounds. Hover detection is scoped to this
+    /// region so moving the cursor through the video's transparent margins doesn't
+    /// trigger the hover effect.
+    private static let characterRegionFraction = (minX: 0.195, maxX: 0.773, minYFromTop: 0.149, maxYFromTop: 0.858)
+
     /// Removes near-white pixels (the flat background the pet assets are rendered on)
     /// by turning them transparent; premultiplied-alpha output per Core Image convention.
     private static let chromaKeyKernel: CIColorKernel? = CIColorKernel(source: """
@@ -36,6 +48,7 @@ final class PetView: NSView {
     private var fallbackImageLayer: CALayer?
     private var trackingArea: NSTrackingArea?
     private var currentRate: Float = 1.0
+    private var currentAssetName: String?
 
     /// Called with a proposed size delta (points) when the user scrolls over the pet.
     var onResizeRequest: ((CGFloat) -> Void)?
@@ -72,13 +85,24 @@ final class PetView: NSView {
             removeTrackingArea(trackingArea)
         }
         let newArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            rect: characterHitRegion,
+            options: [.mouseEnteredAndExited, .activeAlways],
             owner: self,
             userInfo: nil
         )
         addTrackingArea(newArea)
         trackingArea = newArea
+    }
+
+    /// The character's approximate footprint within `bounds` (AppKit is bottom-up,
+    /// the measured fractions are top-down, so the Y axis is flipped here).
+    private var characterHitRegion: NSRect {
+        let f = Self.characterRegionFraction
+        let x = bounds.width * f.minX
+        let width = bounds.width * (f.maxX - f.minX)
+        let y = bounds.height * (1 - f.maxYFromTop)
+        let height = bounds.height * (f.maxYFromTop - f.minYFromTop)
+        return NSRect(x: x, y: y, width: width, height: height)
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -107,12 +131,17 @@ final class PetView: NSView {
     // MARK: - Playback
 
     private func play(assetNamed name: String, fallbackToStaticImage: Bool) {
+        // Already showing this asset: don't tear down and rebuild the player, which
+        // is what was causing the pet to flash/disappear on redundant hover events.
+        guard name != currentAssetName else { return }
+
         guard let url = resourceURL(named: name, extension: Self.videoExtension) else {
             if fallbackToStaticImage {
                 showStaticFallbackIfAvailable()
             }
             return
         }
+        currentAssetName = name
 
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
